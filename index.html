@@ -81,6 +81,7 @@ pre.sum{background:#fff;color:var(--bg1);border-radius:10px;padding:12px;white-s
 .confirmbox{display:none;margin-top:10px;gap:10px}
 .confirmbox.open{display:flex}
 </style>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
 <div class="wrap">
@@ -108,7 +109,7 @@ pre.sum{background:#fff;color:var(--bg1);border-radius:10px;padding:12px;white-s
 
   <div class="tools">
     <button id="btnSummary">📋 Month summary</button>
-    <button id="btnExport">⬇︎ Export CSV</button>
+    <button id="btnSheets">📗 Google Sheets</button>
   </div>
 
   <input type="search" id="q" placeholder="Search job # or customer…">
@@ -174,6 +175,14 @@ pre.sum{background:#fff;color:var(--bg1);border-radius:10px;padding:12px;white-s
     <div class="hint">Pay = (Sold − Parts − Other deductions) × rate. You can change the rate on any single job.</div>
     <div class="btns"><button class="btn primary" id="saveSettings">Save</button></div>
 
+    <label style="margin-top:22px">Google Sheets</label>
+    <div class="hint" id="gsStatus">Not connected. Tap "Google Sheets" on the main screen to save your jobs to a sheet in your own Google account.</div>
+    <div class="btns">
+      <button class="btn ghost" id="btnOpenSheet" style="display:none">Open my sheet</button>
+      <button class="btn ghost" id="btnLoadSheet" style="display:none">Load from sheet</button>
+    </div>
+    <div class="btns" id="gsDisconnectRow" style="display:none"><button class="btn danger" id="btnDisconnect">Disconnect Google</button></div>
+    <div class="btns" style="margin-top:10px"><button class="btn ghost" id="btnExport">Export CSV</button></div>
     <label style="margin-top:22px">Backup &amp; restore</label>
     <div class="hint">Your jobs are saved on this phone only. Make a backup once in a while, or to move to a new phone.</div>
     <div class="btns">
@@ -269,11 +278,11 @@ pre.sum{background:#fff;color:var(--bg1);border-radius:10px;padding:12px;white-s
     if(i>-1)state.jobs[i]=j;else state.jobs.push(j);
     save();close('jobOverlay');
     var jm=j.date.slice(0,7);if(jm!==monthKey(cur)){cur=new Date(parseInt(jm.slice(0,4)),parseInt(jm.slice(5,7))-1,1);}
-    render();toast(i>-1?'Job updated':'Job saved · pay '+money(calc(j).pay));
+    render();toast(i>-1?'Job updated':'Job saved · pay '+money(calc(j).pay));if(gsConnected()&&gs.token)syncToSheet(true);
   });
   $('btnDelete').addEventListener('click',function(){$('confirmDel').classList.add('open');});
   $('delNo').addEventListener('click',function(){$('confirmDel').classList.remove('open');});
-  $('delYes').addEventListener('click',function(){var id=$('jId').value;state.jobs=state.jobs.filter(function(x){return x.id!==id;});save();close('jobOverlay');render();toast('Job deleted');});
+  $('delYes').addEventListener('click',function(){var id=$('jId').value;state.jobs=state.jobs.filter(function(x){return x.id!==id;});save();close('jobOverlay');render();toast('Job deleted');if(gsConnected()&&gs.token)syncToSheet(true);});
   $('fab').addEventListener('click',function(){openJob(null);});
 
   // month nav + search
@@ -326,6 +335,116 @@ pre.sum{background:#fff;color:var(--bg1);border-radius:10px;padding:12px;white-s
       save();render();close('setOverlay');toast('Restored · '+added+' jobs added');}catch(e){toast('That file is not a valid backup');}};
     r.readAsText(f);this.value='';
   });
+
+  // ===== Google Sheets sync (each tech → their own Google account) =====
+  var CLIENT_ID='__GOOGLE_CLIENT_ID__';
+  var SCOPE='https://www.googleapis.com/auth/drive.file';
+  var SHEET_NAME='MFL Tech Pay';
+  var gs={token:null,exp:0,busy:false};
+  function gsConnected(){return !!state.gsheet;}
+  function gsUi(){
+    var c=gsConnected();
+    $('gsStatus').textContent=c?('Connected · '+(state.gsheet.email||'')+(state.gsheet.lastSync?' · last sync '+new Date(state.gsheet.lastSync).toLocaleString():'')):'Not connected. Tap "Google Sheets" on the main screen to save your jobs to a sheet in your own Google account.';
+    $('btnOpenSheet').style.display=c?'':'none';$('btnLoadSheet').style.display=c?'':'none';$('gsDisconnectRow').style.display=c?'flex':'none';
+    $('btnSheets').textContent=c?'📗 Sync to Sheets':'📗 Google Sheets';
+  }
+  function getToken(interactive){
+    return new Promise(function(res,rej){
+      if(gs.token&&Date.now()<gs.exp-60000)return res(gs.token);
+      if(!CLIENT_ID||CLIENT_ID.indexOf('__')===0)return rej(new Error('Google sign-in is not set up yet'));
+      if(!(window.google&&google.accounts&&google.accounts.oauth2))return rej(new Error('Google sign-in did not load – check your connection'));
+      var tc=google.accounts.oauth2.initTokenClient({client_id:CLIENT_ID,scope:SCOPE,callback:function(r){
+        if(r&&r.access_token){gs.token=r.access_token;gs.exp=Date.now()+(r.expires_in||3600)*1000;res(gs.token);}else rej(new Error((r&&r.error)||'Sign-in cancelled'));
+      },error_callback:function(e){rej(new Error(e&&e.type==='popup_closed'?'Sign-in cancelled':'Sign-in failed'));}});
+      tc.requestAccessToken({prompt:''});
+    });
+  }
+  function gapi(url,method,body){
+    return getToken(true).then(function(t){
+      return fetch(url,{method:method||'GET',headers:{Authorization:'Bearer '+t,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
+    }).then(function(r){
+      if(r.status===401){gs.token=null;throw new Error('Google session expired – tap again');}
+      return r.json().then(function(j){if(!r.ok)throw new Error((j.error&&j.error.message)||('Google error '+r.status));return j;});
+    });
+  }
+  function findOrCreateSheet(){
+    if(state.gsheet&&state.gsheet.id)return Promise.resolve(state.gsheet.id);
+    var q=encodeURIComponent("name='"+SHEET_NAME+"' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false");
+    return gapi('https://www.googleapis.com/drive/v3/files?q='+q+'&fields=files(id,name)&spaces=drive').then(function(j){
+      if(j.files&&j.files.length)return j.files[0].id;
+      return gapi('https://sheets.googleapis.com/v4/spreadsheets','POST',{
+        properties:{title:SHEET_NAME,locale:'en_US'},
+        sheets:[{properties:{sheetId:0,title:'Jobs',gridProperties:{frozenRowCount:1}}},{properties:{sheetId:1,title:'Monthly',gridProperties:{frozenRowCount:1}}}]
+      }).then(function(s){
+        var id=s.spreadsheetId;
+        var head=[['Date','Job #','Customer','Sold','Parts & costs','Your pay','Note','id','month','other','rate']];
+        var monthly=[['Month','Jobs','Sold','Parts & costs','Your pay'],
+          ['=IFERROR(SORT(UNIQUE(FILTER(Jobs!I2:I,Jobs!I2:I<>""))),"")',
+           '=ARRAYFORMULA(IF(A2:A="","",COUNTIF(Jobs!I:I,A2:A)))',
+           '=ARRAYFORMULA(IF(A2:A="","",SUMIF(Jobs!I:I,A2:A,Jobs!D:D)))',
+           '=ARRAYFORMULA(IF(A2:A="","",SUMIF(Jobs!I:I,A2:A,Jobs!E:E)))',
+           '=ARRAYFORMULA(IF(A2:A="","",SUMIF(Jobs!I:I,A2:A,Jobs!F:F)))']];
+        return gapi('https://sheets.googleapis.com/v4/spreadsheets/'+id+'/values:batchUpdate','POST',{valueInputOption:'USER_ENTERED',data:[{range:'Jobs!A1',values:head},{range:'Jobs!I2',values:[['=ARRAYFORMULA(IF(A2:A="","",TEXT(A2:A,"yyyy-mm")))']]},{range:'Monthly!A1',values:monthly}]})
+        .then(function(){
+          var money={numberFormat:{type:'CURRENCY',pattern:'"$"#,##0.00'}};
+          var bold={textFormat:{bold:true},backgroundColor:{red:0.012,green:0.031,blue:0.5},horizontalAlignment:'CENTER'};
+          var boldW={textFormat:{bold:true,foregroundColor:{red:1,green:1,blue:1}},backgroundColor:{red:0.012,green:0.031,blue:0.5},horizontalAlignment:'CENTER'};
+          var reqs=[
+            {repeatCell:{range:{sheetId:0,startRowIndex:1,startColumnIndex:0,endColumnIndex:1},cell:{userEnteredFormat:{numberFormat:{type:'DATE',pattern:'yyyy-mm-dd'}}},fields:'userEnteredFormat.numberFormat'}},
+            {repeatCell:{range:{sheetId:0,startRowIndex:0,endRowIndex:1},cell:{userEnteredFormat:boldW},fields:'userEnteredFormat(textFormat,backgroundColor,horizontalAlignment)'}},
+            {repeatCell:{range:{sheetId:1,startRowIndex:0,endRowIndex:1},cell:{userEnteredFormat:boldW},fields:'userEnteredFormat(textFormat,backgroundColor,horizontalAlignment)'}},
+            {repeatCell:{range:{sheetId:0,startRowIndex:1,startColumnIndex:3,endColumnIndex:6},cell:{userEnteredFormat:money},fields:'userEnteredFormat.numberFormat'}},
+            {repeatCell:{range:{sheetId:1,startRowIndex:1,startColumnIndex:2,endColumnIndex:5},cell:{userEnteredFormat:money},fields:'userEnteredFormat.numberFormat'}},
+            {repeatCell:{range:{sheetId:0,startRowIndex:1,startColumnIndex:5,endColumnIndex:6},cell:{userEnteredFormat:{textFormat:{bold:true}}},fields:'userEnteredFormat.textFormat.bold'}},
+            {repeatCell:{range:{sheetId:1,startRowIndex:1,startColumnIndex:4,endColumnIndex:5},cell:{userEnteredFormat:{textFormat:{bold:true}}},fields:'userEnteredFormat.textFormat.bold'}},
+            {updateDimensionProperties:{range:{sheetId:0,dimension:'COLUMNS',startIndex:7,endIndex:11},properties:{hiddenByUser:true},fields:'hiddenByUser'}},
+            {updateDimensionProperties:{range:{sheetId:0,dimension:'COLUMNS',startIndex:0,endIndex:1},properties:{pixelSize:110},fields:'pixelSize'}},
+            {updateDimensionProperties:{range:{sheetId:0,dimension:'COLUMNS',startIndex:2,endIndex:3},properties:{pixelSize:200},fields:'pixelSize'}},
+            {updateDimensionProperties:{range:{sheetId:0,dimension:'COLUMNS',startIndex:6,endIndex:7},properties:{pixelSize:260},fields:'pixelSize'}},
+            {updateDimensionProperties:{range:{sheetId:1,dimension:'COLUMNS',startIndex:0,endIndex:5},properties:{pixelSize:120},fields:'pixelSize'}}
+          ];
+          return gapi('https://sheets.googleapis.com/v4/spreadsheets/'+id+':batchUpdate','POST',{requests:reqs});
+        }).then(function(){return id;});
+      });
+    }).then(function(id){
+      state.gsheet={id:id,email:''};save();
+      return gapi('https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)').then(function(a){state.gsheet.email=(a.user&&a.user.emailAddress)||'';save();return id;},function(){return id;});
+    });
+  }
+  function jobRows(){
+    return state.jobs.slice().sort(function(a,b){return a.date<b.date?-1:a.date>b.date?1:0;}).map(function(j){var c=calc(j);
+      return [j.date,j.num||'',j.cust||'',num(j.sale),num(j.parts)+num(j.other),Math.round(c.pay*100)/100,j.note||'',j.id,num(j.other),num(j.rate)];});
+  }
+  function syncToSheet(quiet){
+    if(gs.busy)return Promise.resolve();gs.busy=true;
+    if(!quiet)toast('Syncing to Google Sheets…');
+    return findOrCreateSheet().then(function(id){
+      return gapi('https://sheets.googleapis.com/v4/spreadsheets/'+id+'/values:batchClear','POST',{ranges:['Jobs!A2:H','Jobs!J2:K']}).then(function(){
+        var rows=jobRows();if(!rows.length)return;
+        return gapi('https://sheets.googleapis.com/v4/spreadsheets/'+id+'/values:batchUpdate','POST',{valueInputOption:'USER_ENTERED',data:[{range:'Jobs!A2',values:rows.map(function(r){return r.slice(0,8);})},{range:'Jobs!J2',values:rows.map(function(r){return r.slice(8);})}]});
+      });
+    }).then(function(){
+      state.gsheet.lastSync=Date.now();save();gsUi();gs.busy=false;
+      if(!quiet)toast('Saved to Google Sheets · '+state.jobs.length+' jobs');
+    }).catch(function(e){gs.busy=false;gsUi();if(!quiet||/expired|not set up/.test(e.message))toast(e.message);});
+  }
+  function loadFromSheet(){
+    if(!state.gsheet)return;
+    gapi('https://sheets.googleapis.com/v4/spreadsheets/'+state.gsheet.id+'/values/Jobs!A2:K').then(function(j){
+      var rows=j.values||[],ids={},added=0;state.jobs.forEach(function(x){ids[x.id]=1;});
+      rows.forEach(function(r){if(!r[0]||!r[7]||ids[r[7]])return;if(!/^\d{4}-\d{2}-\d{2}$/.test(String(r[0])))return;var other=num(r[9]),rate=num(r[10])||state.settings.rate;
+        state.jobs.push({id:r[7],date:String(r[0]).slice(0,10),num:r[1]||'',cust:r[2]||'',sale:num(r[3]),parts:Math.max(0,num(r[4])-other),other:other,rate:rate,note:r[6]||''});added++;});
+      save();render();close('setOverlay');toast('Loaded · '+added+' jobs added from your sheet');
+    }).catch(function(e){toast(e.message);});
+  }
+  $('btnSheets').addEventListener('click',function(){
+    if(!CLIENT_ID||CLIENT_ID.indexOf('__')===0){toast('Google Sheets sync is being set up – coming soon');return;}
+    syncToSheet(false);
+  });
+  $('btnOpenSheet').addEventListener('click',function(){if(state.gsheet)window.open('https://docs.google.com/spreadsheets/d/'+state.gsheet.id,'_blank');});
+  $('btnLoadSheet').addEventListener('click',loadFromSheet);
+  $('btnDisconnect').addEventListener('click',function(){state.gsheet=null;gs.token=null;save();gsUi();toast('Disconnected (your sheet stays in Google Drive)');});
+  gsUi();
 
   render();
 })();
