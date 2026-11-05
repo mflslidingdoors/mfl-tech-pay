@@ -58,6 +58,9 @@ label{display:block;color:var(--muted);font-size:13px;font-weight:700;text-trans
 .sheet input,.sheet textarea,.sheet select{width:100%;background:rgba(255,255,255,.12);border:1px solid var(--line);color:#fff;border-radius:10px;padding:12px;font-size:17px;font-family:var(--font);color-scheme:dark}
 .sheet input:focus{outline:2px solid var(--accent);border-color:transparent}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.row2>div{min-width:0}
+.sheet input[type=date]{-webkit-appearance:none;appearance:none;min-width:0;max-width:100%;display:block;text-align:left;height:49px;line-height:1.2}
+.sheet input[type=date]::-webkit-date-and-time-value{text-align:left;margin:0}
 .prefix{position:relative}
 .prefix input{padding-left:28px}
 .prefix::before{content:"$";position:absolute;left:12px;top:13px;color:var(--muted);font-size:17px}
