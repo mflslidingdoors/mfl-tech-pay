@@ -182,7 +182,6 @@ pre.sum{background:#fff;color:var(--bg1);border-radius:10px;padding:12px;white-s
       <button class="btn ghost" id="btnLoadSheet" style="display:none">Load from sheet</button>
     </div>
     <div class="btns" id="gsDisconnectRow" style="display:none"><button class="btn danger" id="btnDisconnect">Disconnect Google</button></div>
-    <div class="btns" style="margin-top:10px"><button class="btn ghost" id="btnExport">Export CSV</button></div>
     <label style="margin-top:22px">Backup &amp; restore</label>
     <div class="hint">Your jobs are saved on this phone only. Make a backup once in a while, or to move to a new phone.</div>
     <div class="btns">
@@ -315,13 +314,6 @@ pre.sum{background:#fff;color:var(--bg1);border-radius:10px;padding:12px;white-s
     if(window.claude)return false; /* claude.ai preview blocks downloads – copy instead */
     try{var blob=new Blob([content],{type:type});var url=URL.createObjectURL(blob);var a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();document.body.removeChild(a);setTimeout(function(){URL.revokeObjectURL(url);},2000);return true;}catch(e){return false;}
   }
-  $('btnExport').addEventListener('click',function(){
-    var jobs=monthJobs().slice().reverse();
-    var rows=[['Date','Job #','Customer','Sold','Parts','Other','Profit','Rate %','Pay','Note']];
-    jobs.forEach(function(j){var c=calc(j);rows.push([j.date,j.num,j.cust,num(j.sale).toFixed(2),num(j.parts).toFixed(2),num(j.other).toFixed(2),c.profit.toFixed(2),num(j.rate),c.pay.toFixed(2),j.note]);});
-    var csv=rows.map(function(r){return r.map(function(v){v=String(v==null?'':v);return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;}).join(',');}).join('\n');
-    if(!download('mfl-pay-'+monthKey(cur)+'.csv',csv,'text/csv'))copyText(csv,'CSV copied – paste into Excel/Sheets');else toast('CSV downloaded');
-  });
   $('btnBackup').addEventListener('click',function(){
     var json=JSON.stringify(state,null,1);
     if(!download('mfl-tech-pay-backup-'+todayISO()+'.json',json,'application/json'))copyText(json,'Backup copied – paste it into Notes');else toast('Backup downloaded');
